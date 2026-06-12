@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     # Video settings
     VIDEO_OUTPUT_DIR: str = "temp/video"
+    VIDEO_FONTS_DIR: str = "static/fonts"  # Server-side directory for ticker fonts
+    VIDEO_DEFAULT_FONT_FILENAME: str = "UVNMangCau_B.ttf"
 
     # TTS settings
     TTS_OUTPUT_DIR: str = "temp/tts"
