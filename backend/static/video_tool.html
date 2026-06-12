@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Video + Audio Tool</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f0f2f5; color: #1a1a1a; }
+  h1 { padding: 20px 24px; background: #fff; border-bottom: 1px solid #e0e0e0; font-size: 1.2rem; }
+  .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; padding: 20px 24px; max-width: 1200px; }
+  .card { background: #fff; border-radius: 8px; border: 1px solid #e0e0e0; padding: 20px; }
+  .card h2 { font-size: 1rem; margin-bottom: 16px; color: #333; }
+  label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 4px; margin-top: 12px; }
+  input[type=file], select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9rem; }
+  button { margin-top: 16px; padding: 10px 20px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.95rem; width: 100%; }
+  button:hover { background: #1d4ed8; }
+  button:disabled { background: #93c5fd; cursor: not-allowed; }
+  .status { margin-top: 12px; padding: 10px; border-radius: 6px; font-size: 0.9rem; display: none; }
+  .status.ok  { background: #dcfce7; color: #166534; display: block; }
+  .status.err { background: #fee2e2; color: #991b1b; display: block; }
+  .status.inf { background: #dbeafe; color: #1e40af; display: block; }
+
+  /* Browser */
+  .browser { grid-column: 1 / -1; }
+  .breadcrumb { font-size: 0.82rem; color: #666; margin-bottom: 8px; word-break: break-all; }
+  .file-list { border: 1px solid #e0e0e0; border-radius: 6px; max-height: 320px; overflow-y: auto; }
+  .file-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; user-select: none; }
+  .file-item:last-child { border-bottom: none; }
+  .file-item:hover { background: #f8faff; }
+  .file-item.selected { background: #eff6ff; }
+  .file-item .icon { font-size: 1.1rem; width: 22px; text-align: center; flex-shrink: 0; }
+  .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item .badge { font-size: 0.75rem; background: #e0f2fe; color: #0369a1; padding: 2px 7px; border-radius: 10px; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+  .toolbar input { flex: 1; padding: 7px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem; }
+  .toolbar button { margin: 0; width: auto; padding: 7px 14px; font-size: 0.85rem; }
+  .sel-summary { margin-top: 8px; font-size: 0.82rem; color: #555; }
+  .sel-summary span { font-weight: 600; color: #2563eb; }
+  .use-btn { margin-top: 8px; padding: 7px 16px; font-size: 0.85rem; background: #16a34a; width: auto; }
+  .use-btn:hover { background: #15803d; }
+  .up-btn  { padding: 7px 14px; font-size: 0.85rem; background: #6b7280; width: auto; }
+  .up-btn:hover { background: #4b5563; }
+  video { margin-top: 16px; width: 100%; max-height: 300px; border-radius: 6px; display: none; }
+</style>
+</head>
+<body>
+<h1>🎬 Video + Audio Tool</h1>
+<div class="container">
+
+  <!-- ── Folder Browser ─────────────────────────────────── -->
+  <div class="card browser">
+    <h2>📁 Chọn video từ thư mục (server-side)</h2>
+    <div class="toolbar">
+      <input id="pathInput" type="text" placeholder="Nhập đường dẫn thư mục, VD: C:\Users\..." />
+      <button class="up-btn" onclick="goUp()">⬆ Lên</button>
+      <button style="margin:0;width:auto;padding:7px 14px;font-size:.85rem" onclick="navigate(document.getElementById('pathInput').value)">Mở</button>
+    </div>
+    <div class="breadcrumb" id="breadcrumb">Chọn ổ đĩa bên dưới</div>
+    <div class="file-list" id="fileList">Đang tải...</div>
+    <div class="sel-summary" id="selSummary"></div>
+    <button class="use-btn" onclick="useSelected()" style="display:none" id="useBtn">✅ Dùng <span id="selCount">0</span> video đã chọn</button>
+  </div>
+
+  <!-- ── Concat Videos + Audio ──────────────────────────── -->
+  <div class="card">
+    <h2>🎵 Nối video + ghép audio</h2>
+    <label>File audio</label>
+    <input type="file" id="audioFile" accept=".mp3,.wav,.m4a,.ogg,.flac,.aac">
+    <label>Video đã chọn từ browser</label>
+    <div id="selectedPathsDisplay" style="font-size:.8rem;color:#666;padding:6px 0;min-height:24px">Chưa chọn video nào</div>
+    <button onclick="concatVideos()" id="concatBtn">▶ Tạo video</button>
+    <div class="status" id="concatStatus"></div>
+    <video id="concatResult" controls></video>
+  </div>
+
+  <!-- ── Single Video + Audio ───────────────────────────── -->
+  <div class="card">
+    <h2>🔄 Ghép 1 video + audio (loop)</h2>
+    <label>File video</label>
+    <input type="file" id="singleVideo" accept=".mp4,.mov,.avi,.mkv,.webm">
+    <label>File audio</label>
+    <input type="file" id="singleAudio" accept=".mp3,.wav,.m4a,.ogg,.flac,.aac">
+    <button onclick="singleVideoAudio()">▶ Tạo video</button>
+    <div class="status" id="singleStatus"></div>
+    <video id="singleResult" controls></video>
+  </div>
+
+</div>
+
+<script>
+const API = 'http://localhost:8000/api/v1/video';
+let currentPath = null;
+let selectedVideos = [];  // [{name, path}]
+
+async function navigate(path) {
+  const url = path ? `${API}/browse?path=${encodeURIComponent(path)}` : `${API}/browse`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) { alert(await res.text()); return; }
+    const data = await res.json();
+    renderBrowser(data);
+    currentPath = data.current;
+    document.getElementById('pathInput').value = data.current || '';
+  } catch(e) { alert('Lỗi: ' + e.message); }
+}
+
+function renderBrowser(data) {
+  const list = document.getElementById('fileList');
+  const bc   = document.getElementById('breadcrumb');
+  bc.textContent = data.current || 'Roots';
+  list.innerHTML = '';
+
+  // ".." up entry
+  if (data.parent !== null) {
+    const el = makeItem('⬆', '..  (lên thư mục cha)', null, () => navigate(data.parent));
+    list.appendChild(el);
+  }
+
+  // Drives / folders
+  for (const f of data.folders) {
+    const el = makeItem('📁', f.name, null, () => navigate(f.path));
+    list.appendChild(el);
+  }
+
+  // Video files
+  for (const f of data.video_files) {
+    const isSelected = selectedVideos.some(v => v.path === f.path);
+    const el = makeItem('🎬', f.name, f.path, null, isSelected);
+    el.addEventListener('click', () => toggleSelect(f, el));
+    if (isSelected) el.classList.add('selected');
+    list.appendChild(el);
+  }
+
+  if (!data.folders.length && !data.video_files.length && data.current) {
+    list.innerHTML = '<div style="padding:16px;color:#999;text-align:center">Thư mục trống hoặc không có video</div>';
+  }
+  updateSelSummary();
+}
+
+function makeItem(icon, name, path, onClick, selected) {
+  const el = document.createElement('div');
+  el.className = 'file-item' + (selected ? ' selected' : '');
+  el.innerHTML = `<span class="icon">${icon}</span><span class="name">${name}</span>`;
+  if (path) el.innerHTML += `<span class="badge">video</span>`;
+  if (onClick) el.addEventListener('click', onClick);
+  return el;
+}
+
+function toggleSelect(file, el) {
+  const idx = selectedVideos.findIndex(v => v.path === file.path);
+  if (idx >= 0) {
+    selectedVideos.splice(idx, 1);
+    el.classList.remove('selected');
+  } else {
+    selectedVideos.push(file);
+    el.classList.add('selected');
+  }
+  updateSelSummary();
+}
+
+function updateSelSummary() {
+  const btn = document.getElementById('useBtn');
+  const sum = document.getElementById('selSummary');
+  document.getElementById('selCount').textContent = selectedVideos.length;
+  if (selectedVideos.length > 0) {
+    btn.style.display = 'inline-block';
+    sum.innerHTML = `Đã chọn <span>${selectedVideos.length}</span> video: ` +
+      selectedVideos.map(v => v.name).join(', ');
+  } else {
+    btn.style.display = 'none';
+    sum.innerHTML = '';
+  }
+}
+
+function goUp() {
+  if (!currentPath) return;
+  navigate(null); // will be intercepted below
+  const p = document.getElementById('pathInput').value;
+  const parent = p.replace(/[/\\][^/\\]+[/\\]?$/, '') || null;
+  if (parent && parent !== p) navigate(parent);
+  else navigate(null);
+}
+
+function useSelected() {
+  const display = document.getElementById('selectedPathsDisplay');
+  if (!selectedVideos.length) { display.textContent = 'Chưa chọn video nào'; return; }
+  display.innerHTML = selectedVideos.map((v,i) => `<div>${i+1}. ${v.name}</div>`).join('');
+}
+
+// ── Concat Videos + Audio ──────────────────────────────────────
+async function concatVideos() {
+  const audio = document.getElementById('audioFile').files[0];
+  if (!audio) { alert('Chọn file audio'); return; }
+  if (!selectedVideos.length) { alert('Chọn ít nhất 1 video từ browser'); return; }
+
+  const status = document.getElementById('concatStatus');
+  const btn    = document.getElementById('concatBtn');
+  btn.disabled = true;
+  setStatus(status, 'inf', '⏳ Đang xử lý...');
+
+  const form = new FormData();
+  form.append('audio', audio);
+  form.append('video_paths', JSON.stringify(selectedVideos.map(v => v.path)));
+
+  try {
+    const res = await fetch(`${API}/concat-with-audio`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      setStatus(status, 'err', '❌ ' + JSON.stringify(err.detail));
+    } else {
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const vid  = document.getElementById('concatResult');
+      vid.src = url; vid.style.display = 'block';
+      setStatus(status, 'ok', '✅ Thành công! Đang phát bên dưới.');
+      // auto download
+      const a = document.createElement('a'); a.href = url; a.download = 'output.mp4'; a.click();
+    }
+  } catch(e) { setStatus(status, 'err', '❌ ' + e.message); }
+  finally { btn.disabled = false; }
+}
+
+// ── Single Video + Audio ───────────────────────────────────────
+async function singleVideoAudio() {
+  const video = document.getElementById('singleVideo').files[0];
+  const audio = document.getElementById('singleAudio').files[0];
+  if (!video || !audio) { alert('Chọn cả video và audio'); return; }
+
+  const status = document.getElementById('singleStatus');
+  const btn    = status.previousElementSibling;
+  btn.disabled = true;
+  setStatus(status, 'inf', '⏳ Đang xử lý...');
+
+  const form = new FormData();
+  form.append('video', video);
+  form.append('audio', audio);
+
+  try {
+    const res = await fetch(`${API}/from-video`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      setStatus(status, 'err', '❌ ' + JSON.stringify(err.detail));
+    } else {
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const vid  = document.getElementById('singleResult');
+      vid.src = url; vid.style.display = 'block';
+      setStatus(status, 'ok', '✅ Thành công!');
+      const a = document.createElement('a'); a.href = url; a.download = 'output.mp4'; a.click();
+    }
+  } catch(e) { setStatus(status, 'err', '❌ ' + e.message); }
+  finally { btn.disabled = false; }
+}
+
+function setStatus(el, type, msg) {
+  el.className = 'status ' + type;
+  el.textContent = msg;
+}
+
+// Init: load drives
+navigate(null);
+</script>
+</body>
+</html>
