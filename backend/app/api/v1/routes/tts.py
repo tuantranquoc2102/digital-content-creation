@@ -34,16 +34,18 @@ async def tts_from_text(
     request: TTSFromTextRequest,
     tts_svc: TTSService = Depends(get_tts_service),
 ):
-    output_path, chunks_count = await tts_svc.text_to_speech(
+    output_path, chunks_count, session_id = await tts_svc.text_to_speech(
         text=request.text,
         chunk_size=request.chunk_size,
         voice_id=request.voice.value,
+        session_id=request.session_id,
     )
     return TTSResponse(
         message="Text successfully converted to speech",
         chunks_processed=chunks_count,
         output_filename=os.path.basename(output_path),
         voice=request.voice,
+        session_id=session_id,
     )
 
 
@@ -59,10 +61,11 @@ async def tts_from_text_download(
     request: TTSFromTextRequest,
     tts_svc: TTSService = Depends(get_tts_service),
 ):
-    output_path, _ = await tts_svc.text_to_speech(
+    output_path, _, _sid = await tts_svc.text_to_speech(
         text=request.text,
         chunk_size=request.chunk_size,
         voice_id=request.voice.value,
+        session_id=request.session_id,
     )
     return FileResponse(
         path=output_path,
@@ -103,7 +106,7 @@ async def tts_from_file_download(
     except UnicodeDecodeError:
         text = raw.decode("latin-1")
 
-    output_path, _ = await tts_svc.text_to_speech(
+    output_path, _, _sid = await tts_svc.text_to_speech(
         text=text,
         chunk_size=chunk_size or None,
         voice_id=voice.value,
