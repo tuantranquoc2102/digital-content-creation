@@ -18,6 +18,7 @@ from app.services.video_service import (
 from app.core.exceptions import VideoCreationError, UnsupportedFileTypeError
 
 logger = logging.getLogger(__name__)
+default_settings = get_settings()
 
 router = APIRouter(prefix="/video", tags=["Video"])
 
@@ -38,12 +39,25 @@ async def _save_upload(file: UploadFile, output_dir: Path, allowed_types: set[st
     return dest
 
 
+@router.get(
+    "/fonts",
+    summary="List available ticker fonts",
+    description="Returns the list of font files available on the server for ticker text rendering.",
+)
+async def list_fonts(
+    video_svc: VideoService = Depends(get_video_service),
+):
+    return {"fonts": video_svc.list_available_fonts()}
+
+
 @router.post(
     "/from-image",
-    summary="Create video from image + audio",
+    summary="Create 1920×1080 video from image + audio with optional scrolling ticker",
     description=(
         "Upload a **static image** and an **audio file**. "
-        "Returns an MP4 video where the image is displayed for the full duration of the audio."
+        "Returns a **1920×1080 MP4** where the image fills the frame for the full audio duration. "
+        "Optionally overlay a right-to-left scrolling ticker text bar. "
+        "Use `GET /fonts` to see available font files."
     ),
     response_class=FileResponse,
 )
@@ -56,6 +70,35 @@ async def create_video_from_image(
         UploadFile,
         File(description=f"Audio file. Supported: {', '.join(SUPPORTED_AUDIO_TYPES)}"),
     ],
+    ticker_text: Annotated[
+        str,
+        Form(description="Text to scroll right-to-left across the video. Leave empty for no ticker."),
+    ] = "",
+    font_filename: Annotated[
+        str,
+        Form(description="Font filename from the server fonts directory. "
+                         "Defaults to VIDEO_DEFAULT_FONT_FILENAME from .env when omitted."),
+    ] = default_settings.VIDEO_DEFAULT_FONT_FILENAME,
+    font_size: Annotated[
+        int,
+        Form(description="Ticker font size in pixels (default 48)."),
+    ] = 48,
+    font_color: Annotated[
+        str,
+        Form(description="Ticker text colour, e.g. 'white' or '#FFFFFF' (default 'white')."),
+    ] = "white",
+    stroke_color: Annotated[
+        str,
+        Form(description="Ticker text outline/border colour, e.g. 'black' or '#000000' (default 'black')."),
+    ] = "black",
+    ticker_speed: Annotated[
+        float,
+        Form(description="Ticker scroll speed in pixels per second (default 120)."),
+    ] = 120,
+    ticker_bottom_margin: Annotated[
+        int,
+        Form(description="Distance in pixels from the bottom of the video to the ticker text bottom edge (default 40)."),
+    ] = 40,
     video_svc: VideoService = Depends(get_video_service),
     settings: Settings = Depends(get_settings),
 ):
@@ -67,7 +110,17 @@ async def create_video_from_image(
         image_path = await _save_upload(image, temp_dir, SUPPORTED_IMAGE_TYPES)
         audio_path = await _save_upload(audio, temp_dir, SUPPORTED_AUDIO_TYPES)
 
-        output_path = video_svc.create_video_from_image_and_audio(image_path, audio_path)
+        output_path = video_svc.create_video_from_image_audio_ticker(
+            image_path=image_path,
+            audio_path=audio_path,
+            ticker_text=ticker_text,
+            font_filename=font_filename,
+            font_size=font_size,
+            font_color=font_color,
+            stroke_color=stroke_color,
+            ticker_speed=ticker_speed,
+            ticker_bottom_margin=ticker_bottom_margin,
+        )
         return FileResponse(
             path=output_path,
             media_type="video/mp4",
