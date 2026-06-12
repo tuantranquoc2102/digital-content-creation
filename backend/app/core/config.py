@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     # TTS settings
     TTS_OUTPUT_DIR: str = "temp/tts"
     TTS_HEADLESS: bool = True  # Set False to watch the browser during TTS
-    TTS_CHUNK_SIZE: int = 500  # Max chars per TTS request; Zalo only reads the first line
+    TTS_CHUNK_SIZE: int = 5000  # Max chars per TTS request chunk (~1000 chars per submit)
+    TTS_CHUNK_MAX_RETRIES: int = 3   # Per-chunk retry attempts
+    TTS_CHUNK_RETRY_DELAY_S: int = 5  # Base delay between retries (seconds)
 
     # Transcription settings
     WHISPER_MODEL: str = "base"  # tiny, base, small, medium, large

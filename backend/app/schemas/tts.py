@@ -21,6 +21,7 @@ class TTSFromTextRequest(BaseModel):
     text: str
     chunk_size: int = _settings.TTS_CHUNK_SIZE
     voice: VoiceID = VoiceID.NORTHERN_WOMAN
+    session_id: Optional[str] = None  # Provide to resume a previously interrupted job
 
     @field_validator("text")
     @classmethod
@@ -42,3 +43,4 @@ class TTSResponse(BaseModel):
     chunks_processed: int
     output_filename: str
     voice: VoiceID
+    session_id: str  # Use this value to resume if the job fails partway

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,10 @@ GENERATE_BUTTON_SELECTOR = (
 )
 # Timeout (ms) waiting for the audio API response after clicking Generate
 AUDIO_RESPONSE_TIMEOUT_MS = 90_000
+
+# Retry settings for each chunk
+CHUNK_MAX_RETRIES = 3        # max attempts per chunk (1 original + 2 retries)
+CHUNK_RETRY_DELAY_S = 5     # base delay seconds; multiplied by attempt number
 
 
 def _is_audio_response(response) -> bool:
@@ -63,7 +68,8 @@ class TTSService:
         text: str,
         chunk_size: int | None = None,
         voice_id: int = 2,
-    ) -> tuple[str, int]:
+        session_id: str | None = None,
+    ) -> tuple[str, int, str]:
         """
         Convert text to speech.
         Runs Playwright in a worker thread (sync API) to avoid Windows
@@ -74,43 +80,85 @@ class TTSService:
             chunk_size: Max characters per TTS request chunk.
                         Defaults to TTS_CHUNK_SIZE from settings.
             voice_id:   Voice option value (1-6) from the Zalo TTS select element.
+            session_id: Optional. If provided, any already-completed chunk files
+                        from a previous run are reused (resume from failure).
+                        The session_id is returned so it can be passed on a retry.
 
         Returns:
-            (output_mp3_path, number_of_chunks_processed)
+            (output_mp3_path, number_of_chunks_processed, session_id)
         """
         effective_chunk_size = chunk_size if chunk_size is not None else settings.TTS_CHUNK_SIZE
         chunks = self._split_text(text, effective_chunk_size)
-        logger.info(f"TTS: {len(chunks)} chunk(s), chunk_size={effective_chunk_size}, voice_id={voice_id}, headless={self.headless}")
-        return await asyncio.to_thread(self._run_sync, chunks, voice_id)
+        resolved_session_id = session_id or uuid.uuid4().hex[:12]
+        logger.info(
+            f"TTS: {len(chunks)} chunk(s), chunk_size={effective_chunk_size}, "
+            f"voice_id={voice_id}, session_id={resolved_session_id}, headless={self.headless}"
+        )
+        output_path, chunks_done = await asyncio.to_thread(
+            self._run_sync, chunks, voice_id, resolved_session_id
+        )
+        return output_path, chunks_done, resolved_session_id
 
     # ------------------------------------------------------------------
     # Sync Playwright session (runs in worker thread)
     # ------------------------------------------------------------------
 
-    def _run_sync(self, chunks: list[str], voice_id: int) -> tuple[str, int]:
-        session_id = uuid.uuid4().hex[:12]
+    def _run_sync(self, chunks: list[str], voice_id: int, session_id: str) -> tuple[str, int]:
         chunk_paths: list[str] = []
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=self.headless)
-            context = browser.new_context()
-            page = context.new_page()
 
             try:
-                logger.info(f"Opening TTS page: {TTS_URL}")
-                page.goto(TTS_URL, wait_until="networkidle", timeout=30_000)
-                self._dismiss_consent(page)
-
                 for idx, chunk in enumerate(chunks, 1):
+                    expected_path = str(self.output_dir / f"{session_id}_chunk_{idx}.mp3")
+
+                    # ── Resume: reuse an already-completed chunk file ──────────────
+                    if Path(expected_path).exists() and Path(expected_path).stat().st_size > 0:
+                        logger.info(f"Chunk {idx}/{len(chunks)}: reusing existing file (resume)")
+                        chunk_paths.append(expected_path)
+                        continue
+
                     logger.info(f"Processing chunk {idx}/{len(chunks)} ({len(chunk)} chars)")
-                    # Reload page before each chunk (except the first, already loaded above)
-                    # so the page is always in a clean input state, not showing a previous result.
-                    if idx > 1:
-                        logger.debug(f"Reloading TTS page before chunk {idx}")
-                        page.goto(TTS_URL, wait_until="networkidle", timeout=30_000)
-                        self._dismiss_consent(page)
-                    audio_path = self._process_chunk(page, chunk, idx, voice_id, session_id)
-                    chunk_paths.append(audio_path)
+
+                    # ── Per-chunk retry with a fresh browser context each attempt ──
+                    # A fresh context (= fresh incognito session) avoids per-session
+                    # quota limits that disable the Convert button after ~10 requests.
+                    last_error: Exception | None = None
+                    for attempt in range(1, settings.TTS_CHUNK_MAX_RETRIES + 1):
+                        if attempt > 1:
+                            delay = settings.TTS_CHUNK_RETRY_DELAY_S * (attempt - 1)
+                            logger.warning(
+                                f"  Chunk {idx}: retry {attempt}/{settings.TTS_CHUNK_MAX_RETRIES} "
+                                f"in {delay}s… (last error: {last_error})"
+                            )
+                            time.sleep(delay)
+
+                        context = browser.new_context()
+                        page = context.new_page()
+                        try:
+                            page.goto(TTS_URL, wait_until="networkidle", timeout=30_000)
+                            self._dismiss_consent(page)
+                            audio_path = self._process_chunk(page, chunk, idx, voice_id, session_id)
+                            chunk_paths.append(audio_path)
+                            last_error = None
+                            break  # success — move to next chunk
+                        except Exception as e:
+                            last_error = e
+                            logger.warning(f"  Chunk {idx}: attempt {attempt} failed: {e}")
+                        finally:
+                            try:
+                                context.close()
+                            except Exception:
+                                pass
+
+                    if last_error is not None:
+                        raise TTSError(
+                            f"Chunk {idx}/{len(chunks)} failed after "
+                            f"{settings.TTS_CHUNK_MAX_RETRIES} attempt(s). "
+                            f"Pass session_id='{session_id}' to resume from this chunk. "
+                            f"Last error: {last_error}"
+                        ) from last_error
 
             finally:
                 try:
@@ -132,12 +180,10 @@ class TTSService:
     @staticmethod
     def _split_text(text: str, chunk_size: int) -> list[str]:
         """
-        Split text into one sentence per chunk.
-
-        The Zalo TTS site only processes up to the first sentence-ending
-        punctuation (. ! ?) per submit — so each chunk must be a single
-        sentence. chunk_size is only used as a hard limit to split
-        abnormally long sentences that have no punctuation.
+        Split text into chunks of at most chunk_size characters, combining
+        consecutive sentences (separated by . ! ? … or newlines) until the
+        chunk would exceed chunk_size. Abnormally long sentences without
+        punctuation are hard-split at chunk_size boundaries.
         """
         text = re.sub(r"\r\n|\r", "\n", text).strip()
 
@@ -148,13 +194,30 @@ class TTSService:
         sentences = [s.strip() for s in parts if s.strip()]
 
         chunks: list[str] = []
+        current_parts: list[str] = []
+        current_len = 0
+
         for sentence in sentences:
-            if len(sentence) <= chunk_size:
-                chunks.append(sentence)
-            else:
-                # Hard-split only for extremely long sentences with no punctuation
-                for i in range(0, len(sentence), chunk_size):
+            slen = len(sentence)
+            if slen > chunk_size:
+                # Flush accumulated sentences first
+                if current_parts:
+                    chunks.append(" ".join(current_parts))
+                    current_parts, current_len = [], 0
+                # Hard-split the oversized sentence
+                for i in range(0, slen, chunk_size):
                     chunks.append(sentence[i : i + chunk_size])
+            else:
+                sep = 1 if current_parts else 0
+                if current_len + sep + slen > chunk_size:
+                    chunks.append(" ".join(current_parts))
+                    current_parts, current_len = [sentence], slen
+                else:
+                    current_parts.append(sentence)
+                    current_len += sep + slen
+
+        if current_parts:
+            chunks.append(" ".join(current_parts))
 
         return chunks
 
@@ -305,6 +368,24 @@ class TTSService:
             page.fill(TEXTAREA_SELECTOR, sanitized)
         logger.info(f"  Chunk {idx}: textarea verified, len={actual_len or len(sanitized)}")
 
+        # Blur the textarea so React re-evaluates state and enables the Generate button.
+        # The Zalo TTS site requires a focus→type→blur cycle; without blur the button
+        # stays disabled (user reports clicking outside the textarea fixes it).
+        page.evaluate(
+            """
+            (sel) => {
+                const ta = document.querySelector(sel);
+                if (ta) {
+                    ta.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+                    ta.blur();
+                }
+            }
+            """,
+            TEXTAREA_SELECTOR,
+        )
+        page.wait_for_timeout(500)  # allow React to re-render after blur
+        logger.debug(f"  Chunk {idx}: textarea blurred to trigger React state update")
+
         # 3. Select voice — select is now in the DOM
         self._select_voice(page, voice_id)
 
@@ -312,29 +393,26 @@ class TTSService:
 
         generate_btn = page.locator(GENERATE_BUTTON_SELECTOR).first
         generate_btn.wait_for(state="visible", timeout=10_000)
-        # Wait until the button is also enabled (React may keep it disabled until text state updates)
+        # Wait until the button is also enabled (React may keep it disabled until text state updates).
+        # We check ALL candidate selectors so any one of them being enabled counts.
         try:
             page.wait_for_function(
-                "(sel) => { const b = document.querySelector(sel); return b && !b.disabled; }",
-                GENERATE_BUTTON_SELECTOR.split(",")[0].strip(),
-                timeout=10_000,
+                """
+                (selectors) => {
+                    for (const sel of selectors) {
+                        try {
+                            const b = document.querySelector(sel);
+                            if (b && !b.disabled) return true;
+                        } catch (_) {}
+                    }
+                    return false;
+                }
+                """,
+                [s.strip() for s in GENERATE_BUTTON_SELECTOR.split(",")],
+                timeout=15_000,
             )
         except Exception:
             logger.warning(f"  Chunk {idx}: could not confirm button enabled, proceeding anyway")
-
-        # Passively capture all tts.zalo.ai responses via event listener.
-        # Using page.on("response") avoids route.fetch() errors that occur with
-        # page.route() interception when the CDN uses strict origin checks.
-        hls_buffer: dict[str, bytes] = {}
-
-        def _on_response(response) -> None:
-            try:
-                if "tts.zalo.ai" in response.url and response.status == 200:
-                    hls_buffer[response.url] = response.body()
-            except Exception as e:
-                logger.debug(f"  Chunk {idx}: response buffer error: {e}")
-
-        page.on("response", _on_response)
 
         # Check for quota/error banners immediately after clicking, before waiting 90s
         def _check_page_error() -> str | None:
@@ -378,17 +456,16 @@ class TTSService:
 
             # Handle HLS playlist (m3u8) vs direct audio
             if ".m3u8" in url:
-                logger.info(f"  Chunk {idx}: HLS playlist detected, collecting via response buffer...")
-                data = self._collect_hls_from_buffer(page, url, hls_buffer, idx)
+                logger.info(f"  Chunk {idx}: HLS playlist detected, fetching segments directly...")
+                data = self._fetch_hls_audio(page, url, idx)
             else:
                 data = response.body()
                 if not data:
                     raise TTSError(f"Empty audio body received for chunk {idx}")
-        finally:
-            try:
-                page.remove_listener("response", _on_response)
-            except Exception:
-                pass
+        except TTSError:
+            raise
+        except Exception as e:
+            raise TTSError(f"Chunk {idx}: unexpected error: {e}") from e
 
         output_path = str(self.output_dir / f"{session_id}_chunk_{idx}.mp3")
         with open(output_path, "wb") as f:
@@ -397,125 +474,115 @@ class TTSService:
         return output_path
 
     # ------------------------------------------------------------------
-    # HLS helper
+    # HLS helper — direct HTTP download
     # ------------------------------------------------------------------
 
-    def _collect_hls_from_buffer(
-        self, page: Page, m3u8_url: str, hls_buffer: dict, chunk_idx: int
-    ) -> bytes:
+    def _fetch_hls_audio(self, page: Page, m3u8_url: str, chunk_idx: int) -> bytes:
         """
-        Wait for the m3u8 playlist and all its segments to appear in hls_buffer
-        (populated by the page.route() interceptor), then convert to MP3.
-        Handles both master playlists (EXT-X-STREAM-INF) and media playlists.
+        Download an HLS stream by fetching the playlist and every segment
+        directly via Playwright's request context (shares browser cookies/
+        session tokens embedded in the CDN URL).
+
+        This replaces the previous passive-buffer approach, which relied on
+        the browser's media player auto-fetching all segments — that only
+        prefetched the first ~12 segments before stopping, leaving the rest
+        un-buffered and causing the '19/31 HLS segments not buffered' error.
         """
-        # 1. Wait for m3u8 body (should already be buffered, but give it 5 s)
-        for _ in range(50):
-            if m3u8_url in hls_buffer:
-                break
-            page.wait_for_timeout(100)
-        else:
-            raise TTSError(f"m3u8 not captured in route buffer for chunk {chunk_idx}")
 
-        m3u8_text = hls_buffer[m3u8_url].decode("utf-8")
-        logger.debug(f"  Chunk {chunk_idx}: m3u8 content:\n{m3u8_text[:500]}")
-        base_url = m3u8_url.rsplit("/", 1)[0] + "/"
+        def _get_bytes(url: str) -> bytes:
+            resp = page.request.get(url, timeout=30_000)
+            if not resp.ok:
+                raise TTSError(f"HTTP {resp.status} fetching {url}")
+            return resp.body()
 
-        def _resolve(line: str, base: str) -> str:
-            s = line.strip()
+        def _get_text(url: str) -> str:
+            resp = page.request.get(url, timeout=30_000)
+            if not resp.ok:
+                raise TTSError(f"HTTP {resp.status} fetching {url}")
+            return resp.text()
+
+        def _resolve(seg: str, base: str) -> str:
+            s = seg.strip()
             if s.startswith("http"):
                 return s
             if s.startswith("//"):
-                return "https:" + s  # protocol-relative URL
+                return "https:" + s
             return base + s
 
         def _parse_segments(text: str, base: str) -> list[str]:
-            """Extract segment URLs: standard #EXTINF lines and #EXT-X-PRELOAD-HINT URIs."""
-            import re as _re
-            segs = []
+            segs: list[str] = []
             lines = text.splitlines()
             for i, line in enumerate(lines):
                 s = line.strip()
                 if s.startswith("#EXTINF"):
-                    # Next non-empty, non-comment line is the segment URL
                     for j in range(i + 1, len(lines)):
                         nxt = lines[j].strip()
                         if nxt and not nxt.startswith("#"):
                             segs.append(_resolve(nxt, base))
                             break
                 elif s.startswith("#EXT-X-PRELOAD-HINT"):
-                    # LL-HLS: #EXT-X-PRELOAD-HINT:TYPE=PART,URI="//chunk-v3..."
-                    m = _re.search(r'URI=["\']([^"\']+)["\']', s)
+                    m = re.search(r'URI=["\']([^"\']+)["\']', s)
                     if m:
                         segs.append(_resolve(m.group(1), base))
             return segs
 
-        def _get_m3u8_text() -> str:
-            return hls_buffer.get(m3u8_url, b"").decode("utf-8")
+        base_url = m3u8_url.rsplit("/", 1)[0] + "/"
 
-        # 2. Detect master playlist (contains #EXT-X-STREAM-INF or exactly #EXT-X-MEDIA:)
+        # 1. Fetch the top-level playlist
+        m3u8_text = _get_text(m3u8_url)
+        logger.debug(f"  Chunk {chunk_idx}: m3u8 content:\n{m3u8_text[:500]}")
+
+        # 2. Resolve master playlist → media playlist
         lines = m3u8_text.splitlines()
         is_master = any(
             l.strip().startswith("#EXT-X-STREAM-INF") or l.strip().startswith("#EXT-X-MEDIA:")
             for l in lines
         )
-
         if is_master:
-            # Pick the first variant playlist URL
-            media_playlist_url = next(
+            media_url = next(
                 (_resolve(l, base_url) for l in lines if l.strip() and not l.strip().startswith("#")),
                 None,
             )
-            if not media_playlist_url:
+            if not media_url:
                 raise TTSError(f"No variant URL in master playlist for chunk {chunk_idx}")
-            logger.info(f"  Chunk {chunk_idx}: master playlist → media playlist {media_playlist_url}")
+            logger.info(f"  Chunk {chunk_idx}: master → media playlist {media_url}")
+            base_url = media_url.rsplit("/", 1)[0] + "/"
+            m3u8_url = media_url
+            m3u8_text = _get_text(m3u8_url)
 
-            # Wait for the browser to fetch and buffer the media playlist
-            for _ in range(50):
-                if media_playlist_url in hls_buffer:
-                    break
-                page.wait_for_timeout(100)
+        # 3. For live/LL-HLS streams: poll until EXT-X-ENDLIST appears (max 120 s)
+        if "#EXT-X-ENDLIST" not in m3u8_text:
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                time.sleep(2)
+                try:
+                    m3u8_text = _get_text(m3u8_url)
+                    logger.debug(f"  Chunk {chunk_idx}: waiting for EXT-X-ENDLIST…")
+                    if "#EXT-X-ENDLIST" in m3u8_text:
+                        break
+                except Exception:
+                    pass
             else:
-                raise TTSError(f"Media playlist not captured in route buffer for chunk {chunk_idx}")
+                logger.warning(
+                    f"  Chunk {chunk_idx}: EXT-X-ENDLIST not found after 120s, using partial playlist"
+                )
 
-            m3u8_text = hls_buffer[media_playlist_url].decode("utf-8")
-            base_url = media_playlist_url.rsplit("/", 1)[0] + "/"
-
-        # 3. Wait for m3u8 to contain a real segment (LL-HLS sends partial playlist first).
-        #    The browser re-fetches the m3u8; _on_response overwrites hls_buffer[m3u8_url]
-        #    with the latest version each time, so keep re-reading until #EXTINF appears or
-        #    a PRELOAD-HINT is present, max 30 s.
-        for _ in range(150):
-            current_text = _get_m3u8_text()
-            if "#EXTINF" in current_text or "#EXT-X-PRELOAD-HINT" in current_text:
-                m3u8_text = current_text
-                break
-            page.wait_for_timeout(200)
-
+        # 4. Parse the complete segment list
         segments = _parse_segments(m3u8_text, base_url)
         if not segments:
             raise TTSError(
                 f"Empty HLS media playlist for chunk {chunk_idx}. "
                 f"Playlist content: {m3u8_text[:300]}"
             )
-        logger.info(f"  Chunk {chunk_idx}: HLS has {len(segments)} segment(s), waiting...")
+        logger.info(f"  Chunk {chunk_idx}: downloading {len(segments)} HLS segment(s) directly…")
 
-        # 4. Wait for the browser to fetch all segments (auto-play drives this), max 30 s
-        for _ in range(150):
-            if all(s in hls_buffer for s in segments):
-                break
-            page.wait_for_timeout(200)
-        missing = [s for s in segments if s not in hls_buffer]
-        if missing:
-            raise TTSError(
-                f"Timeout: {len(missing)}/{len(segments)} HLS segments not buffered for chunk {chunk_idx}"
-            )
-
-        # 5. Concatenate raw segment bytes in playlist order
+        # 5. Download every segment in playlist order
         raw = bytearray()
-        for seg_url in segments:
-            raw.extend(hls_buffer[seg_url])
+        for i, seg_url in enumerate(segments, 1):
+            logger.debug(f"  Chunk {chunk_idx}: segment {i}/{len(segments)}: {seg_url}")
+            raw.extend(_get_bytes(seg_url))
 
-        # 4. Convert TS/AAC → MP3 via FFmpeg
+        # 6. Convert TS/AAC → MP3 via FFmpeg
         raw_file = str((self.output_dir / f"hls_raw_{uuid.uuid4().hex[:8]}.ts").resolve())
         out_file = str((self.output_dir / f"hls_tmp_{uuid.uuid4().hex[:8]}.mp3").resolve())
         Path(raw_file).write_bytes(bytes(raw))
