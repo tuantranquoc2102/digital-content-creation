@@ -1,6 +1,6 @@
 # Backend — Digital Content Creation API
 
-FastAPI backend for downloading YouTube audio and generating transcriptions.
+FastAPI backend for downloading media and generating transcriptions.
 
 ## Requirements
 
@@ -41,6 +41,9 @@ Swagger UI: http://localhost:8000/docs
 | `POST` | `/api/v1/audio/download` | Download audio from YouTube (with optional trim) |
 | `POST` | `/api/v1/audio/transcribe/youtube` | Transcribe audio from YouTube link |
 | `POST` | `/api/v1/audio/transcribe/file` | Transcribe uploaded audio file |
+| `POST` | `/api/v1/video/download/youtube` | Download video from YouTube |
+| `POST` | `/api/v1/video/download/facebook` | Download video from Facebook |
+| `POST` | `/api/v1/video/download/douyin` | Download video from Douyin |
 | `GET`  | `/health` | Health check |
 
 ---
@@ -101,6 +104,53 @@ Upload an audio file and receive its transcription.
 - `language` *(optional)* — ISO-639-1 code (e.g. `en`, `vi`)
 
 Returns: same shape as transcribe/youtube.
+
+---
+
+### POST `/api/v1/video/download/youtube`
+
+Download a single video from YouTube.
+
+**Request body (JSON):**
+```json
+{
+  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+}
+```
+
+Returns: `video/mp4` file download.
+
+---
+
+### POST `/api/v1/video/download/facebook`
+
+Download a single video from Facebook.
+
+**Request body (JSON):**
+```json
+{
+  "url": "https://www.facebook.com/watch/?v=1234567890"
+}
+```
+
+Returns: `video/mp4` file download.
+
+---
+
+### POST `/api/v1/video/download/douyin`
+
+Download a single video from Douyin.
+
+For playback compatibility, the backend auto-converts Douyin output to H.264/AAC MP4 when needed. This avoids requiring HEVC/H.265 extensions on Windows players.
+
+**Request body (JSON):**
+```json
+{
+  "url": "https://www.douyin.com/video/1234567890"
+}
+```
+
+Returns: `video/mp4` file download.
 
 ---
 

@@ -34,6 +34,26 @@ def validate_youtube_url(url: str) -> bool:
     return bool(youtube_regex.match(url))
 
 
+def validate_facebook_url(url: str) -> bool:
+    """Validate if the given URL is a valid Facebook video URL."""
+    facebook_regex = re.compile(
+        r"(https?://)?(www\.)?"
+        r"(facebook\.com|fb\.watch)/"
+        r".+"
+    )
+    return bool(facebook_regex.match(url))
+
+
+def validate_douyin_url(url: str) -> bool:
+    """Validate if the given URL is a valid Douyin URL."""
+    douyin_regex = re.compile(
+        r"(https?://)?(www\.)?"
+        r"(douyin\.com|v\.douyin\.com)/"
+        r".+"
+    )
+    return bool(douyin_regex.match(url))
+
+
 def seconds_to_ffmpeg_time(seconds: float) -> str:
     """Convert seconds to ffmpeg time format HH:MM:SS.mmm"""
     hours = int(seconds // 3600)
