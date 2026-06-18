@@ -1,5 +1,6 @@
 import json
 import logging
+import mimetypes
 import os
 import uuid
 from pathlib import Path
@@ -9,12 +10,18 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse
 
 from app.core.config import Settings, get_settings
+from app.schemas.video import (
+    DouyinVideoDownloadRequest,
+    FacebookVideoDownloadRequest,
+    YouTubeVideoDownloadRequest,
+)
 from app.services.video_service import (
     VideoService,
     SUPPORTED_AUDIO_TYPES,
     SUPPORTED_IMAGE_TYPES,
     SUPPORTED_VIDEO_TYPES,
 )
+from app.services.video_download_service import VideoDownloadService
 from app.core.exceptions import VideoCreationError, UnsupportedFileTypeError
 
 logger = logging.getLogger(__name__)
@@ -25,6 +32,10 @@ router = APIRouter(prefix="/video", tags=["Video"])
 
 def get_video_service() -> VideoService:
     return VideoService()
+
+
+def get_video_download_service() -> VideoDownloadService:
+    return VideoDownloadService()
 
 
 async def _save_upload(file: UploadFile, output_dir: Path, allowed_types: set[str]) -> str:
@@ -48,6 +59,63 @@ async def list_fonts(
     video_svc: VideoService = Depends(get_video_service),
 ):
     return {"fonts": video_svc.list_available_fonts()}
+
+
+@router.post(
+    "/download/youtube",
+    summary="Download video from YouTube",
+    description="Download a single YouTube video and return it as a file.",
+    response_class=FileResponse,
+)
+async def download_youtube_video(
+    request: YouTubeVideoDownloadRequest,
+    download_svc: VideoDownloadService = Depends(get_video_download_service),
+):
+    output_path = download_svc.download_from_youtube(request.url)
+    media_type = mimetypes.guess_type(output_path)[0] or "application/octet-stream"
+    return FileResponse(
+        path=output_path,
+        media_type=media_type,
+        filename=os.path.basename(output_path),
+    )
+
+
+@router.post(
+    "/download/facebook",
+    summary="Download video from Facebook",
+    description="Download a single Facebook video and return it as a file.",
+    response_class=FileResponse,
+)
+async def download_facebook_video(
+    request: FacebookVideoDownloadRequest,
+    download_svc: VideoDownloadService = Depends(get_video_download_service),
+):
+    output_path = download_svc.download_from_facebook(request.url)
+    media_type = mimetypes.guess_type(output_path)[0] or "application/octet-stream"
+    return FileResponse(
+        path=output_path,
+        media_type=media_type,
+        filename=os.path.basename(output_path),
+    )
+
+
+@router.post(
+    "/download/douyin",
+    summary="Download video from Douyin",
+    description="Download a single Douyin video and return it as a file.",
+    response_class=FileResponse,
+)
+async def download_douyin_video(
+    request: DouyinVideoDownloadRequest,
+    download_svc: VideoDownloadService = Depends(get_video_download_service),
+):
+    output_path = download_svc.download_from_douyin(request.url)
+    media_type = mimetypes.guess_type(output_path)[0] or "application/octet-stream"
+    return FileResponse(
+        path=output_path,
+        media_type=media_type,
+        filename=os.path.basename(output_path),
+    )
 
 
 @router.post(

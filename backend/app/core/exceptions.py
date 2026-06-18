@@ -41,6 +41,14 @@ class VideoCreationError(HTTPException):
         )
 
 
+class VideoDownloadError(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Video download failed: {detail}",
+        )
+
+
 class UnsupportedFileTypeError(HTTPException):
     def __init__(self, received: str, allowed: set[str]):
         super().__init__(
