@@ -7,3 +7,4 @@ openai-whisper>=20231117
 python-multipart>=0.0.9
 playwright>=1.44.0
 Pillow>=10.0.0
+requests>=2.31.0
