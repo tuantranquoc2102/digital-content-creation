@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.schemas.video import (
     DouyinVideoDownloadRequest,
     FacebookVideoDownloadRequest,
+    FacebookProfileDownloadRequest,
     YouTubeVideoDownloadRequest,
 )
 from app.services.video_service import (
@@ -115,6 +116,33 @@ async def download_douyin_video(
         path=output_path,
         media_type=media_type,
         filename=os.path.basename(output_path),
+    )
+
+
+@router.post(
+    "/download/facebook/profile",
+    summary="Download all videos from a Facebook profile / Reels page",
+    description=(
+        "Scrape and download up to `max_videos` videos from a Facebook profile, "
+        "page, or Reels tab URL (e.g. `https://www.facebook.com/people/…/?sk=reels_tab`). "
+        "Returns a **ZIP** archive containing all downloaded MP4 files. "
+        "Public pages work without authentication. "
+        "Private or friend-only content requires the server to have valid Facebook cookies "
+        "configured via `FACEBOOK_COOKIES_FILE` in `.env`."
+    ),
+    response_class=FileResponse,
+)
+async def download_facebook_profile_videos(
+    request: FacebookProfileDownloadRequest,
+    download_svc: VideoDownloadService = Depends(get_video_download_service),
+):
+    zip_path = download_svc.download_all_from_facebook_profile(
+        request.url, request.max_videos
+    )
+    return FileResponse(
+        path=zip_path,
+        media_type="application/zip",
+        filename=os.path.basename(zip_path),
     )
 
 

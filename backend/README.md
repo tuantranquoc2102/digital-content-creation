@@ -1,33 +1,33 @@
 # Backend — Digital Content Creation API
-
 FastAPI backend for downloading media and generating transcriptions.
 
 ## Requirements
-
 - Python 3.10+
 - [FFmpeg](https://ffmpeg.org/download.html) must be installed and available in `PATH`
 
 ## Setup
-
 ```bash
-cd backend
+$ cd backend
 
 # Create virtual environment
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
+$ python -m venv .venv
+
+# Active .venv
+# Windows
+$ .venv\Scripts\activate
+# macOS/Linux
+$ source .venv/bin/activate
 
 # Install dependencies
-pip install -r requirements.txt
+$ pip install -r requirements.txt
 
 # Copy environment file
-copy .env.example .env
+$ copy .env.example .env
 ```
 
 ## Run
-
 ```bash
-python run.py
+$ python run.py
 ```
 
 Swagger UI: http://localhost:8000/docs
