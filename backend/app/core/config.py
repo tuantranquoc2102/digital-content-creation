@@ -27,6 +27,25 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "base"  # tiny, base, small, medium, large
     WHISPER_DEVICE: str = "cpu"  # cpu or cuda
 
+    # Social publishing settings
+    SOCIAL_HTTP_TIMEOUT_SECONDS: int = 60
+    SOCIAL_POLL_INTERVAL_SECONDS: int = 5
+    SOCIAL_POLL_MAX_ATTEMPTS: int = 24
+
+    FACEBOOK_GRAPH_VERSION: str = "v20.0"
+    FACEBOOK_PAGE_ID: str | None = None
+    FACEBOOK_PAGE_ACCESS_TOKEN: str | None = None
+
+    INSTAGRAM_GRAPH_VERSION: str = "v20.0"
+    INSTAGRAM_USER_ID: str | None = None
+    INSTAGRAM_ACCESS_TOKEN: str | None = None
+
+    # Reserved for future providers
+    YOUTUBE_API_KEY: str | None = None
+    YOUTUBE_CHANNEL_ID: str | None = None
+    TIKTOK_CLIENT_KEY: str | None = None
+    TIKTOK_CLIENT_SECRET: str | None = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

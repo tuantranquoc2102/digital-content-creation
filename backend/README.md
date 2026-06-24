@@ -44,6 +44,7 @@ Swagger UI: http://localhost:8000/docs
 | `POST` | `/api/v1/video/download/youtube` | Download video from YouTube |
 | `POST` | `/api/v1/video/download/facebook` | Download video from Facebook |
 | `POST` | `/api/v1/video/download/douyin` | Download video from Douyin |
+| `POST` | `/api/v1/social/publish` | Publish video/short-video to social platforms |
 | `GET`  | `/health` | Health check |
 
 ---
@@ -154,6 +155,38 @@ Returns: `video/mp4` file download.
 
 ---
 
+### POST `/api/v1/social/publish`
+
+Publish video/short-video to social platforms using credentials from `.env`.
+
+Currently supported:
+- `facebook` (Page video upload)
+- `instagram` (Reels/video via Instagram Graph API)
+
+**Request body (JSON):**
+```json
+{
+  "platform": "facebook",
+  "video_type": "video",
+  "caption": "New episode is live!",
+  "video_file_path": "temp/video/upload_abc123.mp4"
+}
+```
+
+For Instagram, provide a public URL:
+```json
+{
+  "platform": "instagram",
+  "video_type": "short_video",
+  "caption": "Daily short clip",
+  "video_url": "https://cdn.example.com/videos/short-001.mp4"
+}
+```
+
+Returns: publish status, post/media id, and provider response payload.
+
+---
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -161,3 +194,26 @@ Returns: `video/mp4` file download.
 | `WHISPER_MODEL` | `base` | Whisper model size: `tiny`, `base`, `small`, `medium`, `large` |
 | `WHISPER_DEVICE` | `cpu` | `cpu` or `cuda` |
 | `AUDIO_OUTPUT_DIR` | `temp/audio` | Temporary directory for downloaded audio |
+| `FACEBOOK_PAGE_ID` | `` | Facebook Page ID used for publishing |
+| `FACEBOOK_PAGE_ACCESS_TOKEN` | `` | Page access token for Facebook Graph API |
+| `INSTAGRAM_USER_ID` | `` | Instagram Business/Creator user ID |
+| `INSTAGRAM_ACCESS_TOKEN` | `` | Access token for Instagram Graph API |
+| `SOCIAL_HTTP_TIMEOUT_SECONDS` | `60` | Timeout for social API requests |
+| `SOCIAL_POLL_INTERVAL_SECONDS` | `5` | Poll interval when waiting Instagram processing |
+| `SOCIAL_POLL_MAX_ATTEMPTS` | `24` | Max polling attempts for Instagram processing |
+
+### Required `.env` keys for social publish
+
+Minimum required values:
+
+For Facebook publishing:
+```env
+FACEBOOK_PAGE_ID=YOUR_PAGE_ID
+FACEBOOK_PAGE_ACCESS_TOKEN=YOUR_PAGE_ACCESS_TOKEN
+```
+
+For Instagram publishing:
+```env
+INSTAGRAM_USER_ID=YOUR_IG_USER_ID
+INSTAGRAM_ACCESS_TOKEN=YOUR_IG_ACCESS_TOKEN
+```
