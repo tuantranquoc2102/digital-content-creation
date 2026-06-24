@@ -12,9 +12,28 @@ def _to_seconds(value: Optional[TimeInput]) -> Optional[float]:
     return parse_time_to_seconds(value)
 
 
+class AudioSegment(BaseModel):
+    """A single time-bounded segment of an audio file."""
+
+    start_time: TimeInput
+    end_time: TimeInput
+    label: Optional[str] = None  # used as filename hint in the output ZIP
+
+    @field_validator("start_time", "end_time", mode="before")
+    @classmethod
+    def parse_time(cls, v: Optional[TimeInput]) -> Optional[float]:
+        return _to_seconds(v)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "AudioSegment":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be greater than start_time")
+        return self
+
+
 class YouTubeAudioRequest(BaseModel):
     url: str
-    start_time: TimeInput = 0.0
+    start_time: Optional[TimeInput] = None
     end_time: Optional[TimeInput] = None
 
     @field_validator("url")
@@ -32,7 +51,8 @@ class YouTubeAudioRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "YouTubeAudioRequest":
-        if self.end_time is not None and self.end_time <= self.start_time:
+        effective_start = 0.0 if self.start_time is None else self.start_time
+        if self.end_time is not None and self.end_time <= effective_start:
             raise ValueError("end_time must be greater than start_time")
         return self
 

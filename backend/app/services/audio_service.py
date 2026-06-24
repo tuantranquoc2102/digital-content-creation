@@ -1,7 +1,9 @@
+import json
 import os
 import uuid
 import subprocess
 import logging
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -58,7 +60,7 @@ class AudioService:
     def download_audio(
         self,
         url: str,
-        start_time: float = 0.0,
+        start_time: Optional[float] = None,
         end_time: Optional[float] = None,
     ) -> str:
         """
@@ -77,10 +79,11 @@ class AudioService:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
 
-            needs_trim = start_time > 0 or end_time is not None
+            effective_start_time = 0.0 if start_time is None else start_time
+            needs_trim = start_time is not None or end_time is not None
             if needs_trim:
                 trimmed_path = str(self.output_dir / f"{file_id}_trimmed.mp3")
-                self._trim_audio(raw_mp3, trimmed_path, start_time, end_time)
+                self._trim_audio(raw_mp3, trimmed_path, effective_start_time, end_time)
                 os.remove(raw_mp3)
                 return trimmed_path
 
@@ -100,3 +103,95 @@ class AudioService:
                 logger.debug(f"Cleaned up temp file: {file_path}")
         except OSError as e:
             logger.warning(f"Failed to remove temp file {file_path}: {e}")
+
+    # ------------------------------------------------------------------
+    # Multi-segment trim
+    # ------------------------------------------------------------------
+
+    def trim_audio_to_segments(
+        self,
+        input_path: str,
+        segments: list[dict],
+    ) -> str:
+        """
+        Trim *input_path* into multiple segments and return the path to a ZIP
+        archive containing one MP3 per segment.
+
+        Each segment dict must have ``start_time`` (float, seconds) and
+        ``end_time`` (float, seconds).  An optional ``label`` key is used as
+        the filename stem inside the ZIP.
+        """
+        if not segments:
+            raise AudioDownloadError("At least one segment is required")
+
+        session_id = uuid.uuid4().hex
+        segment_paths: list[tuple[str, str]] = []  # (file_path, arcname)
+
+        for idx, seg in enumerate(segments, start=1):
+            start = float(seg["start_time"])
+            end = float(seg["end_time"])
+            if end <= start:
+                raise AudioDownloadError(
+                    f"Segment {idx}: end_time ({end}) must be greater than start_time ({start})"
+                )
+            label = str(seg.get("label") or f"segment_{idx:03d}")
+            out_path = str(self.output_dir / f"{session_id}_{idx:03d}.mp3")
+            self._trim_audio(input_path, out_path, start, end)
+            arcname = f"{label}.mp3"
+            segment_paths.append((out_path, arcname))
+
+        zip_path = str(self.output_dir / f"{session_id}_segments.zip")
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path, arcname in segment_paths:
+                zf.write(file_path, arcname=arcname)
+
+        for file_path, _ in segment_paths:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+
+        return zip_path
+
+    # ------------------------------------------------------------------
+    # Join multiple audio files
+    # ------------------------------------------------------------------
+
+    def join_audio_files(self, input_paths: list[str]) -> str:
+        """
+        Concatenate *input_paths* in order and return the path to a single
+        merged MP3 file.  Uses FFmpeg concat demuxer for a fast, lossless join.
+        """
+        if not input_paths:
+            raise AudioDownloadError("At least one audio file is required for joining")
+
+        session_id = uuid.uuid4().hex
+        concat_list_path = str(self.output_dir / f"{session_id}_concat.txt")
+        output_path = str(self.output_dir / f"{session_id}_joined.mp3")
+
+        try:
+            with open(concat_list_path, "w", encoding="utf-8") as f:
+                for path in input_paths:
+                    abs_path = str(Path(path).resolve(strict=False)).replace("\\", "/")
+                    safe = abs_path.replace("'", "'\\''")
+                    f.write(f"file '{safe}'\n")
+
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list_path,
+                "-c", "copy",
+                output_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise AudioDownloadError(f"FFmpeg join error: {result.stderr}")
+
+            return str(Path(output_path).resolve(strict=False))
+
+        finally:
+            try:
+                os.remove(concat_list_path)
+            except OSError:
+                pass

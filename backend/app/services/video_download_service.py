@@ -1,6 +1,8 @@
 import logging
+import shutil
 import subprocess
 import uuid
+import zipfile
 from pathlib import Path
 
 import yt_dlp
@@ -27,6 +29,58 @@ class VideoDownloadService:
 
     def download_from_douyin(self, url: str) -> str:
         return self._download_video(url, platform="douyin")
+
+    def download_all_from_facebook_profile(self, url: str, max_videos: int = 10) -> str:
+        """Download up to *max_videos* videos from a Facebook profile/reels page.
+
+        Returns the path to a ZIP archive containing all downloaded files.
+        """
+        batch_id = uuid.uuid4().hex
+        batch_dir = self.output_dir / f"fb_profile_{batch_id}"
+        batch_dir.mkdir(parents=True, exist_ok=True)
+
+        output_template = str(batch_dir / "%(title).80s_%(id)s.%(ext)s")
+        ydl_opts = {
+            "format": "best[ext=mp4]/best",
+            "outtmpl": output_template,
+            "noplaylist": False,
+            "playlistend": max_videos,
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        try:
+            logger.info(
+                f"Downloading up to {max_videos} Facebook profile videos from: {url}"
+            )
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            downloaded = [f for f in batch_dir.iterdir() if f.is_file()]
+            if not downloaded:
+                raise VideoDownloadError(
+                    "No videos were found at the given Facebook profile URL. "
+                    "The page may require login or contain no downloadable videos."
+                )
+
+            zip_path = str(self.output_dir / f"fb_profile_{batch_id}.zip")
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for video_file in sorted(downloaded):
+                    zf.write(video_file, arcname=video_file.name)
+
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            return str(Path(zip_path).resolve())
+
+        except yt_dlp.utils.DownloadError as e:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            raise VideoDownloadError(str(e))
+        except VideoDownloadError:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            raise
+        except Exception as e:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            logger.error(f"Unexpected error during Facebook profile download: {e}")
+            raise VideoDownloadError(str(e))
 
     @staticmethod
     def _is_hevc_codec(codec_name: str) -> bool:
