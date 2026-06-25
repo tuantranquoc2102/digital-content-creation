@@ -41,6 +41,23 @@
   .up-btn  { padding: 7px 14px; font-size: 0.85rem; background: #6b7280; width: auto; }
   .up-btn:hover { background: #4b5563; }
   video { margin-top: 16px; width: 100%; max-height: 300px; border-radius: 6px; display: none; }
+
+  /* Ratio radio cards */
+  .ratio-group { display: flex; gap: 12px; margin-top: 4px; }
+  .ratio-group input[type=radio] { display: none; }
+  .ratio-card {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border: 2px solid #d1d5db; border-radius: 8px; padding: 10px 8px; cursor: pointer;
+    transition: border-color .15s, background .15s; gap: 6px; user-select: none;
+  }
+  .ratio-card:hover { border-color: #93c5fd; background: #f0f9ff; }
+  .ratio-card .ratio-icon { font-size: 2rem; line-height: 1; }
+  .ratio-card .ratio-label { font-size: .82rem; font-weight: 600; color: #374151; text-align: center; }
+  .ratio-card .ratio-sub { font-size: .75rem; color: #6b7280; text-align: center; }
+  input[type=radio]:checked + .ratio-card {
+    border-color: #2563eb; background: #eff6ff;
+  }
+  input[type=radio]:checked + .ratio-card .ratio-label { color: #1d4ed8; }
 </style>
 </head>
 <body>
@@ -83,6 +100,62 @@
     <button onclick="singleVideoAudio()">▶ Tạo video</button>
     <div class="status" id="singleStatus"></div>
     <video id="singleResult" controls></video>
+  </div>
+
+  <!-- ── Image + Audio → Video ──────────────────────────── -->
+  <div class="card" style="grid-column: 1 / -1">
+    <h2>🖼️ Tạo video từ ảnh + audio</h2>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <label>Tỷ lệ video</label>
+        <div class="ratio-group">
+          <label style="margin:0;flex:1">
+            <input type="radio" name="imgAspectRatio" value="1920x1080" checked onchange="onAspectRatioChange()">
+            <span class="ratio-card">
+              <span class="ratio-icon">🖥️</span>
+              <span class="ratio-label">1920 × 1080</span>
+              <span class="ratio-sub">Ngang · 16:9</span>
+            </span>
+          </label>
+          <label style="margin:0;flex:1">
+            <input type="radio" name="imgAspectRatio" value="1080x1920" onchange="onAspectRatioChange()">
+            <span class="ratio-card">
+              <span class="ratio-icon">📱</span>
+              <span class="ratio-label">1080 × 1920</span>
+              <span class="ratio-sub">Dọc · 9:16 (Reels)</span>
+            </span>
+          </label>
+        </div>
+
+        <label>File ảnh</label>
+        <input type="file" id="imgFile" accept=".jpg,.jpeg,.png,.webp,.bmp" onchange="validateImageRatio()">
+        <div id="imgRatioWarn" class="status" style="display:none"></div>
+
+        <label>File audio</label>
+        <input type="file" id="imgAudio" accept=".mp3,.wav,.m4a,.ogg,.flac,.aac">
+      </div>
+      <div>
+        <label>Chữ chạy (ticker) – để trống nếu không cần</label>
+        <input type="text" id="imgTicker" placeholder="Nhập nội dung chữ chạy..." style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:.9rem">
+
+        <label>Font chữ</label>
+        <select id="imgFont" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:.9rem">
+          <option value="">-- mặc định --</option>
+        </select>
+
+        <label>Cỡ chữ (px)</label>
+        <input type="number" id="imgFontSize" value="48" min="12" max="200" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:.9rem">
+
+        <label>Màu chữ</label>
+        <input type="text" id="imgFontColor" value="white" placeholder="white / #FFFFFF" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:.9rem">
+
+        <label>Tốc độ chữ chạy (px/s)</label>
+        <input type="number" id="imgTickerSpeed" value="120" min="20" max="800" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;font-size:.9rem">
+      </div>
+    </div>
+    <button onclick="createFromImage()" id="imgBtn">▶ Tạo video</button>
+    <div class="status" id="imgStatus"></div>
+    <video id="imgResult" controls></video>
   </div>
 
 </div>
@@ -257,8 +330,114 @@ function setStatus(el, type, msg) {
   el.textContent = msg;
 }
 
-// Init: load drives
+// ── Image + Audio → Video ──────────────────────────────────────
+const ASPECT_HINTS = {
+  '1920x1080': { ratio: 16/9, label: '16:9 (ngang)' },
+  '1080x1920': { ratio: 9/16, label: '9:16 (dọc / Reels)' },
+};
+let imgRatioValid = true; // tracks whether current image passes ratio check
+
+function getSelectedRatio() {
+  return document.querySelector('input[name="imgAspectRatio"]:checked').value;
+}
+
+function onAspectRatioChange() {
+  // Re-validate if image already selected
+  if (document.getElementById('imgFile').files[0]) validateImageRatio();
+}
+
+function validateImageRatio() {
+  const file = document.getElementById('imgFile').files[0];
+  const warn = document.getElementById('imgRatioWarn');
+  if (!file) { warn.style.display = 'none'; imgRatioValid = true; return; }
+
+  const ratio = getSelectedRatio();
+  const expected = ASPECT_HINTS[ratio].ratio;
+
+  const img = new Image();
+  img.onload = () => {
+    const actualRatio = img.width / img.height;
+    const tolerance = 0.05; // 5% tolerance
+    if (Math.abs(actualRatio - expected) > tolerance) {
+      imgRatioValid = false;
+      warn.className = 'status err';
+      warn.style.display = 'block';
+      warn.textContent = `❌ Ảnh ${img.width}×${img.height} (tỷ lệ ${(actualRatio).toFixed(2)}) không khớp với ${ratio} – ${ASPECT_HINTS[ratio].label}. Vui lòng chọn ảnh đúng tỷ lệ hoặc đổi tỷ lệ video.`;
+    } else {
+      imgRatioValid = true;
+      warn.className = 'status ok';
+      warn.style.display = 'block';
+      warn.textContent = `✅ Ảnh ${img.width}×${img.height} khớp tỷ lệ ${ratio}.`;
+    }
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+async function loadFonts() {
+  try {
+    const res = await fetch(`${API}/fonts`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const sel = document.getElementById('imgFont');
+    for (const f of data.fonts) {
+      const opt = document.createElement('option');
+      opt.value = f.filename;
+      opt.textContent = f.filename;
+      sel.appendChild(opt);
+    }
+  } catch(e) { /* ignore */ }
+}
+
+async function createFromImage() {
+  const imgFile   = document.getElementById('imgFile').files[0];
+  const audioFile = document.getElementById('imgAudio').files[0];
+  if (!imgFile)   { alert('Chọn file ảnh'); return; }
+  if (!audioFile) { alert('Chọn file audio'); return; }
+  if (!imgRatioValid) {
+    const warn = document.getElementById('imgRatioWarn');
+    warn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+
+  const status = document.getElementById('imgStatus');
+  const btn    = document.getElementById('imgBtn');
+  btn.disabled = true;
+  setStatus(status, 'inf', '⏳ Đang xử lý...');
+
+  const form = new FormData();
+  form.append('image', imgFile);
+  form.append('audio', audioFile);
+  form.append('video_aspect_ratio', getSelectedRatio());
+  const ticker = document.getElementById('imgTicker').value.trim();
+  if (ticker) {
+    form.append('ticker_text', ticker);
+    form.append('font_filename',   document.getElementById('imgFont').value);
+    form.append('font_size',       document.getElementById('imgFontSize').value);
+    form.append('font_color',      document.getElementById('imgFontColor').value);
+    form.append('ticker_speed',    document.getElementById('imgTickerSpeed').value);
+  }
+
+  try {
+    const res = await fetch(`${API}/from-image`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      setStatus(status, 'err', '❌ ' + JSON.stringify(err.detail));
+    } else {
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const vid  = document.getElementById('imgResult');
+      vid.src = url; vid.style.display = 'block';
+      setStatus(status, 'ok', '✅ Thành công! Đang phát bên dưới.');
+      const a = document.createElement('a'); a.href = url; a.download = 'output.mp4'; a.click();
+    }
+  } catch(e) { setStatus(status, 'err', '❌ ' + e.message); }
+  finally { btn.disabled = false; }
+}
+
+// Init: load drives and fonts
 navigate(null);
+loadFonts();
 </script>
 </body>
 </html>
