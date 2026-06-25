@@ -83,10 +83,13 @@ class VideoService:
         stroke_color: str = "black",
         ticker_speed: float = 120,
         ticker_bottom_margin: int = 40,
+        video_width: int = 1920,
+        video_height: int = 1080,
     ) -> str:
         """
-        Create a 1920×1080 MP4 from a static image + audio, optionally
-        overlaying a right-to-left scrolling ticker text bar.
+        Create a video (default 1920×1080, or 1080×1920 for portrait) from a
+        static image + audio, optionally overlaying a right-to-left scrolling
+        ticker text bar.
 
         The ticker is rendered to a transparent PNG via Pillow, then composited
         using FFmpeg's overlay filter.  This avoids the drawtext filter entirely,
@@ -122,12 +125,12 @@ class VideoService:
                     font_color=font_color,
                     stroke_color=stroke_color,
                 )
-                y_pos = 1080 - bar_h - ticker_bottom_margin
+                y_pos = video_height - bar_h - ticker_bottom_margin
                 s = f"{ticker_speed:.6f}"
                 # x(t) = W - t*s + floor(t*s / (W+w)) * (W+w)
                 # This is mod(t*s, W+w) expressed without any commas:
-                #   W=1920 (background width), w=overlay width from FFmpeg 'w' var
-                x_expr = f"1920-t*{s}+floor(t*{s}/(1920+w))*(1920+w)"
+                #   W=video_width (background width), w=overlay width from FFmpeg 'w' var
+                x_expr = f"{video_width}-t*{s}+floor(t*{s}/({video_width}+w))*({video_width}+w)"
 
                 # ── Write filter_complex to a script file ───────────────────
                 # The filter content contains NO file paths (font/text are baked
@@ -137,8 +140,8 @@ class VideoService:
                 # [bg] must be the FIRST input to overlay, [1:v] the second.
                 # Using -/filter_complex <path> (replaces deprecated -filter_complex_script).
                 filter_content = (
-                    "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
-                    "pad=1920:1080:(ow-iw)/2:(oh-ih)/2[bg];"
+                    f"[0:v]scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
+                    f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2[bg];"
                     f"[bg][1:v]overlay=x={x_expr}:y={y_pos}[out]"
                 )
                 filter_script = str(
@@ -163,21 +166,17 @@ class VideoService:
                     output_path,
                 ]
             else:
-                # ── No ticker: simple scale+pad via filter_script:v ───────────
+                # ── No ticker: simple scale+pad directly via -vf ─────────────
                 filter_content = (
-                    "scale=1920:1080:force_original_aspect_ratio=decrease,"
-                    "pad=1920:1080:(ow-iw)/2:(oh-ih)/2"
+                    f"scale={video_width}:{video_height}:force_original_aspect_ratio=decrease,"
+                    f"pad={video_width}:{video_height}:(ow-iw)/2:(oh-ih)/2"
                 )
-                filter_script = str(
-                    (self.output_dir / f"filter_{uuid.uuid4().hex[:8]}.txt").resolve()
-                )
-                Path(filter_script).write_bytes(filter_content.encode("utf-8"))
 
                 cmd = [
                     "ffmpeg", "-y",
                     "-loop", "1", "-i", image_path,
                     "-i", audio_path,
-                    "-/vf", filter_script,
+                    "-vf", filter_content,
                     "-c:v", "libx264",
                     "-tune", "stillimage",
                     "-preset", "fast",

@@ -4,7 +4,7 @@ import mimetypes
 import os
 import uuid
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -148,10 +148,12 @@ async def download_facebook_profile_videos(
 
 @router.post(
     "/from-image",
-    summary="Create 1920×1080 video from image + audio with optional scrolling ticker",
+    summary="Create video from image + audio with optional scrolling ticker",
     description=(
         "Upload a **static image** and an **audio file**. "
-        "Returns a **1920×1080 MP4** where the image fills the frame for the full audio duration. "
+        "Returns an MP4 where the image fills the frame for the full audio duration. "
+        "Choose output resolution: **1920×1080** (landscape) or **1080×1920** (portrait/vertical). "
+        "The uploaded image aspect ratio should match the chosen resolution for best results. "
         "Optionally overlay a right-to-left scrolling ticker text bar. "
         "Use `GET /fonts` to see available font files."
     ),
@@ -195,9 +197,20 @@ async def create_video_from_image(
         int,
         Form(description="Distance in pixels from the bottom of the video to the ticker text bottom edge (default 40)."),
     ] = 40,
+    video_aspect_ratio: Annotated[
+        Literal["1920x1080", "1080x1920"],
+        Form(description="Output video resolution: '1920x1080' (landscape) or '1080x1920' (portrait/vertical)."),
+    ] = "1920x1080",
     video_svc: VideoService = Depends(get_video_service),
     settings: Settings = Depends(get_settings),
 ):
+    if video_aspect_ratio not in ("1920x1080", "1080x1920"):
+        raise HTTPException(
+            status_code=422,
+            detail="video_aspect_ratio must be '1920x1080' or '1080x1920'",
+        )
+    vid_w, vid_h = (1920, 1080) if video_aspect_ratio == "1920x1080" else (1080, 1920)
+
     temp_dir = Path(settings.VIDEO_OUTPUT_DIR)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -216,6 +229,8 @@ async def create_video_from_image(
             stroke_color=stroke_color,
             ticker_speed=ticker_speed,
             ticker_bottom_margin=ticker_bottom_margin,
+            video_width=vid_w,
+            video_height=vid_h,
         )
         return FileResponse(
             path=output_path,
